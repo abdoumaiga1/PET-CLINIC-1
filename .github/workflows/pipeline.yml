@@ -1,4 +1,4 @@
-```yaml
+
 name: CI/CD Pipeline - PetClinic
 
 on:
@@ -193,4 +193,4 @@ jobs:
           name: trivy-fs-report
           path: trivy-results.*
           if-no-files-found: ignore
-```
+
