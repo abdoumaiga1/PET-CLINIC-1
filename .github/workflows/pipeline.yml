@@ -363,8 +363,16 @@ jobs:
 
       - name: Download current ECS task definition
         run: |
+          TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "Current task definition: $TASK_DEFINITION"
+
           aws ecs describe-task-definition \
-            --task-definition "${{ env.ECS_SERVICE }}" \
+            --task-definition "$TASK_DEFINITION" \
             --query taskDefinition \
             --output json > task-definition.json
 
