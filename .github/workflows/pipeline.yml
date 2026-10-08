@@ -1,24 +1,26 @@
 name: CI/CD Pipeline - PetClinic
 
-"on":
+on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 env:
   JAVA_VERSION: '25'
+
   SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
   SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
   SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+
   VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
   VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
   VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
   VAULT_JFROG_PATH: secrets/creds/jfrog
+
   JFROG_URL: ${{ secrets.JFROG_URL }}
-  JFROG_REPO: 'devops-project'
+  JFROG_REPO: 'Devops-project'
+
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
   AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
@@ -27,9 +29,13 @@ env:
 
 jobs:
 
+  # ============================================================
+  # GITLEAKS
+  # ============================================================
   gitleaks:
     name: Gitleaks Secret Scan
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -41,21 +47,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ============================================================
+  # BUILD
+  # ============================================================
   build:
     name: Build
     runs-on: ubuntu-latest
     needs: gitleaks
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up JDK
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
           java-version: ${{ env.JAVA_VERSION }}
-          distribution: temurin
+          distribution: 'temurin'
           cache: maven
 
       - name: Compile and package
@@ -68,19 +78,23 @@ jobs:
           path: target/*.jar
           retention-days: 1
 
+  # ============================================================
+  # TEST
+  # ============================================================
   test:
     name: Test
     runs-on: ubuntu-latest
     needs: build
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up JDK
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
           java-version: ${{ env.JAVA_VERSION }}
-          distribution: temurin
+          distribution: 'temurin'
           cache: maven
 
       - name: Run unit tests
@@ -94,21 +108,25 @@ jobs:
           path: target/surefire-reports/
           if-no-files-found: ignore
 
+  # ============================================================
+  # SONARQUBE
+  # ============================================================
   sonarQube-scan:
     name: SonarQube Scan
     runs-on: ubuntu-latest
     needs: test
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up JDK
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
           java-version: ${{ env.JAVA_VERSION }}
-          distribution: temurin
+          distribution: 'temurin'
           cache: maven
 
       - name: Cache SonarCloud packages
@@ -116,13 +134,12 @@ jobs:
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar
-          restore-keys: |
-            ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
 
       - name: Compile project for analysis
         run: mvn -B compile -DskipTests
 
-      - name: SonarQube code analysis
+      - name: SonarCloud code analysis
         uses: SonarSource/sonarqube-scan-action@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,24 +160,29 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fail-on-quality-gate-error: false
 
+  # ============================================================
+  # TRIVY FILESYSTEM SCAN
+  # ============================================================
   trivy-scan:
     name: Trivy Filesystem Scan
     runs-on: ubuntu-latest
     needs: sonarQube-scan
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up JDK
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
           java-version: ${{ env.JAVA_VERSION }}
-          distribution: temurin
+          distribution: 'temurin'
           cache: maven
 
       - name: Populate Maven cache
         run: |
-          mvn -B dependency:resolve -DskipTests --no-transfer-progress
+          mvn -B dependency:resolve -DskipTests \
+            --no-transfer-progress
 
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -171,10 +193,10 @@ jobs:
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@master
         with:
-          scan-type: fs
-          scan-ref: .
-          severity: CRITICAL,HIGH
-          format: json
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          format: 'json'
           output: trivy-results.json
           exit-code: '0'
           ignore-unfixed: true
@@ -187,15 +209,18 @@ jobs:
           path: trivy-results.json
           if-no-files-found: ignore
 
+  # ============================================================
+  # PUBLISH TO JFROG
+  # ============================================================
   publish:
     name: Publish to JFrog Artifactory
     runs-on: ubuntu-latest
-    needs:
-      - sonarQube-scan
-      - trivy-scan
+    needs: [sonarQube-scan, trivy-scan]
+
     if: |
       github.ref == 'refs/heads/main' &&
       github.event_name == 'push'
+
     steps:
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -203,7 +228,7 @@ jobs:
           name: app-jar
           path: target
 
-      - name: Authenticate to Vault
+      - name: Authenticate to Vault and fetch JFrog credentials
         uses: hashicorp/vault-action@v3
         with:
           url: ${{ env.VAULT_ADDR }}
@@ -238,16 +263,22 @@ jobs:
           jf rt upload "target/*.jar" "${JFROG_REPO}/" \
             --server-id=artifactory
 
+  # ============================================================
+  # BUILD AND PUSH DOCKER IMAGE TO ECR
+  # ============================================================
   docker-build-push:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
     needs: publish
+
     if: |
       github.ref == 'refs/heads/main' &&
       github.event_name == 'push'
+
     permissions:
       id-token: write
       contents: read
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -262,7 +293,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push image
+      - name: Build, tag, and push image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
@@ -280,13 +311,18 @@ jobs:
           docker push \
             "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
+  # ============================================================
+  # TRIVY ECR IMAGE SCAN
+  # ============================================================
   docker-image-scan:
     name: Trivy Scan - ECR Image
     runs-on: ubuntu-latest
     needs: docker-build-push
+
     permissions:
       id-token: write
       contents: read
+
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -304,16 +340,21 @@ jobs:
           image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           format: table
           exit-code: '0'
-          severity: CRITICAL,HIGH
+          severity: 'CRITICAL,HIGH'
           ignore-unfixed: true
 
+  # ============================================================
+  # DEPLOY TO ECS
+  # ============================================================
   deploy-ecs:
     name: Deploy to ECS
     runs-on: ubuntu-latest
     needs: docker-image-scan
+
     permissions:
       id-token: write
       contents: read
+
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
